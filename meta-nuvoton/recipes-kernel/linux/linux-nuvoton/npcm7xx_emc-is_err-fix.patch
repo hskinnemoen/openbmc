@@ -1,0 +1,28 @@
+From 95c9299759e5ddd71ccea042a27135aae44bbaaf Mon Sep 17 00:00:00 2001
+From: Havard Skinnemoen <hskinnemoen@google.com>
+Date: Fri, 10 Jul 2020 22:35:05 -0700
+Subject: [PATCH] npcm7xx_emc: Use IS_ERR instead of NULL check
+
+of_get_mac_address returns ERR_PTR on error, not NULL.
+
+Signed-off-by: Havard Skinnemoen <hskinnemoen@google.com>
+---
+ drivers/net/ethernet/nuvoton/npcm7xx_emc.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/net/ethernet/nuvoton/npcm7xx_emc.c b/drivers/net/ethernet/nuvoton/npcm7xx_emc.c
+index efb441d511c5..41c7f814a9c3 100644
+--- a/drivers/net/ethernet/nuvoton/npcm7xx_emc.c
++++ b/drivers/net/ethernet/nuvoton/npcm7xx_emc.c
+@@ -1753,7 +1753,7 @@ static void get_mac_address(struct net_device *dev)
+ 
+ 	mac_address = of_get_mac_address(np);
+ 
+-	if (mac_address != 0)
++	if (!IS_ERR(mac_address))
+ 		ether_addr_copy(dev->dev_addr, mac_address);
+ 
+ 	if (is_valid_ether_addr(dev->dev_addr)) {
+-- 
+2.27.0.383.g050319c2ae-goog
+
