@@ -10,6 +10,7 @@ KSRC ?= "git://github.com/openbmc/linux;protocol=git;branch=${KBRANCH}"
 SRC_URI = "${KSRC}"
 SRC_URI_append_npcm7xx = " file://defconfig"
 SRC_URI_append_npcm7xx = " file://npcm7xx_emc-is_err-fix.patch"
+SRC_URI_append_npcm7xx = " file://npcm7xx_emc-infinite-loops.patch"
 
 LINUX_VERSION_EXTENSION ?= "-${SRCREV}"
 

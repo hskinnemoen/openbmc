@@ -1,0 +1,143 @@
+From 100a4b79661828cb785e60650f6224f7d3caec91 Mon Sep 17 00:00:00 2001
+From: Havard Skinnemoen <hskinnemoen@google.com>
+Date: Fri, 10 Jul 2020 23:25:05 -0700
+Subject: [PATCH] npcm7xx_emc: Add timeout to infinite loops
+
+npcm7xx_return_default_idle has two infinite loops. Add timeouts so we
+won't hang the kernel forever if the hardware goes out to lunch (or, in
+my case, the qemu emc device isn't implemented yet).
+
+Signed-off-by: Havard Skinnemoen <hskinnemoen@google.com>
+---
+ drivers/net/ethernet/nuvoton/npcm7xx_emc.c | 46 ++++++++++++++++++----
+ 1 file changed, 39 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/net/ethernet/nuvoton/npcm7xx_emc.c b/drivers/net/ethernet/nuvoton/npcm7xx_emc.c
+index 41c7f814a9c3..636484f4e1f1 100644
+--- a/drivers/net/ethernet/nuvoton/npcm7xx_emc.c
++++ b/drivers/net/ethernet/nuvoton/npcm7xx_emc.c
+@@ -871,11 +871,12 @@ static void npcm7xx_set_fifo_threshold(struct net_device *dev)
+ 	writel(val, (ether->reg + REG_FFTCR));
+ }
+ 
+-static void npcm7xx_return_default_idle(struct net_device *dev)
++static int npcm7xx_return_default_idle(struct net_device *dev)
+ {
+ 	struct npcm7xx_ether *ether = netdev_priv(dev);
+ 	__le32 val;
+ 	__le32 saved_bits;
++	ktime_t deadline;
+ 
+ 	val = readl((ether->reg + REG_MCMDR));
+ 	saved_bits = val & (MCMDR_FDUP | MCMDR_OPMOD);
+@@ -888,20 +889,36 @@ static void npcm7xx_return_default_idle(struct net_device *dev)
+ 	 * register that its reset value is not 0,
+ 	 * we choose (ether->reg + REG_FFTCR).
+ 	 */
++	deadline = ktime_add_us(ktime_get(), 100);
+ 	do {
+ 		val = readl((ether->reg + REG_FFTCR));
+-	} while (val == 0);
++	} while (val == 0 && ktime_before(ktime_get(), deadline));
++
++	if (val == 0) {
++		dev_err(&ether->pdev->dev,
++			"Timed out waiting for FFTCR to become nonzero.\n");
++		return -ETIMEDOUT;
++	}
+ 
+ 	/*
+ 	 * Now we can verify if (ether->reg + REG_MCMDR).SWR became
+ 	 * 0 (probably it will be 0 on the first read).
+ 	 */
++	deadline = ktime_add_us(ktime_get(), 100);
+ 	do {
+ 		val = readl((ether->reg + REG_MCMDR));
+-	} while (val & SWR);
++	} while (val & SWR && ktime_before(ktime_get(), deadline));
++
++	if (val & SWR) {
++		dev_err(&ether->pdev->dev,
++			"Timed out waiting for SWR bit to clear.\n");
++		return -ETIMEDOUT;
++	}
+ 
+ 	/* restore values */
+ 	writel(saved_bits, (ether->reg + REG_MCMDR));
++
++	return 0;
+ }
+ 
+ static void npcm7xx_enable_mac_interrupt(struct net_device *dev)
+@@ -1002,9 +1019,10 @@ static void npcm7xx_ether_set_rx_mode(struct net_device *dev)
+ 	ether->camcmr = rx_mode;
+ }
+ 
+-static void npcm7xx_reset_mac(struct net_device *dev, int need_free)
++static int npcm7xx_reset_mac(struct net_device *dev, int need_free)
+ {
+ 	struct npcm7xx_ether *ether = netdev_priv(dev);
++	int ret;
+ 
+ 	netif_tx_lock(dev);
+ 
+@@ -1012,7 +1030,10 @@ static void npcm7xx_reset_mac(struct net_device *dev, int need_free)
+ 	writel(readl((ether->reg + REG_MCMDR)) & ~(MCMDR_TXON | MCMDR_RXON),
+ 	       (ether->reg + REG_MCMDR));
+ 
+-	npcm7xx_return_default_idle(dev);
++	ret = npcm7xx_return_default_idle(dev);
++	if (ret < 0)
++		goto out;
++
+ 	npcm7xx_set_fifo_threshold(dev);
+ 
+ 	if (need_free)
+@@ -1044,7 +1065,12 @@ static void npcm7xx_reset_mac(struct net_device *dev, int need_free)
+ 	ether->need_reset = 0;
+ 
+ 	netif_wake_queue(dev);
++	ret = 0;
++
++out:
+ 	netif_tx_unlock(dev);
++
++	return ret;
+ }
+ 
+ static int npcm7xx_mdio_write(struct mii_bus *bus, int phy_id, int regnum,
+@@ -1114,8 +1140,11 @@ static int npcm7xx_set_mac_address(struct net_device *dev, void *addr)
+ static int npcm7xx_ether_close(struct net_device *dev)
+ {
+ 	struct npcm7xx_ether *ether = netdev_priv(dev);
++	int ret;
+ 
+-	npcm7xx_return_default_idle(dev);
++	ret = npcm7xx_return_default_idle(dev);
++	if (ret < 0)
++		return ret;
+ 
+ 	if (ether->phy_dev)
+ 		phy_stop(ether->phy_dev);
+@@ -1603,6 +1632,7 @@ static int npcm7xx_ether_open(struct net_device *dev)
+ {
+ 	struct npcm7xx_ether *ether;
+ 	struct platform_device *pdev;
++	int ret;
+ 
+ 	ether = netdev_priv(dev);
+ 	pdev = ether->pdev;
+@@ -1612,7 +1642,9 @@ static int npcm7xx_ether_open(struct net_device *dev)
+ 		ether->duplex = DUPLEX_FULL;
+ 		npcm7xx_opmode(dev, 100, DUPLEX_FULL);
+ 	}
+-	npcm7xx_reset_mac(dev, 0);
++	ret = npcm7xx_reset_mac(dev, 0);
++	if (ret < 0)
++		return ret;
+ 
+ 	if (request_irq(ether->txirq, npcm7xx_tx_interrupt, 0x0, pdev->name,
+ 			dev)) {
+-- 
+2.27.0.383.g050319c2ae-goog
+
